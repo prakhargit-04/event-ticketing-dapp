@@ -172,8 +172,18 @@ function App() {
       setContract(ticketContract)
       setStatus(null)
 
-      // Fetch owner address
-      const ownerAddr = await ticketContract.owner()
+      // Fetch owner / organizer address
+      let ownerAddr = await ticketContract.owner()
+      try {
+        if (typeof ticketContract.organizer === "function") {
+          const org = await ticketContract.organizer()
+          if (org && org !== ethers.ZeroAddress) {
+            ownerAddr = org
+          }
+        }
+      } catch {
+        // fallback to owner
+      }
       setContractOwner(ownerAddr)
 
       return true
@@ -271,7 +281,17 @@ function App() {
           eventTicketArtifact.abi,
           signer
         )
-        const ownerAddr = await ticketContract.owner()
+        let ownerAddr = await ticketContract.owner()
+        try {
+          if (typeof ticketContract.organizer === "function") {
+            const org = await ticketContract.organizer()
+            if (org && org !== ethers.ZeroAddress) {
+              ownerAddr = org
+            }
+          }
+        } catch {
+          // fallback to owner
+        }
 
         setAccount(accounts[0])
         setContract(ticketContract)
@@ -706,21 +726,22 @@ function App() {
 
   const handleAddVerifier = async () => {
     if (!contract || !verifierInputAddress) return
-    if (!ethers.isAddress(verifierInputAddress)) {
+    const targetAddress = verifierInputAddress.trim()
+    if (!ethers.isAddress(targetAddress)) {
       alert("Please enter a valid Ethereum address.")
       return
     }
     setActionLoading(true)
     setStatus(null)
     try {
-      const tx = await contract.addVerifier(verifierInputAddress)
+      const tx = await contract.addVerifier(targetAddress)
       setStatus({ type: "info", text: "Adding verifier... waiting for confirmation..." })
       await tx.wait()
-      setStatus({ type: "success", text: `Verifier ${verifierInputAddress} successfully added!` })
+      setStatus({ type: "success", text: `Verifier ${targetAddress} successfully added!` })
       setVerifierInputAddress("")
     } catch (err) {
       console.error("Error adding verifier:", err)
-      let errMsg = err.reason || err.message
+      let errMsg = err.reason || err.shortMessage || err.message
       if (err.code === "ACTION_REJECTED") {
         errMsg = "Transaction was rejected in MetaMask."
       }
@@ -732,23 +753,33 @@ function App() {
 
   const handleRemoveVerifier = async () => {
     if (!contract || !verifierInputAddress) return
-    if (!ethers.isAddress(verifierInputAddress)) {
+    const targetAddress = verifierInputAddress.trim()
+    if (!ethers.isAddress(targetAddress)) {
       alert("Please enter a valid Ethereum address.")
+      return
+    }
+    if (contractOwner && targetAddress.toLowerCase() === contractOwner.toLowerCase()) {
+      setStatus({
+        type: "error",
+        text: "Cannot remove organizer as verifier: The event organizer is a permanent verifier."
+      })
       return
     }
     setActionLoading(true)
     setStatus(null)
     try {
-      const tx = await contract.removeVerifier(verifierInputAddress)
+      const tx = await contract.removeVerifier(targetAddress)
       setStatus({ type: "info", text: "Removing verifier... waiting for confirmation..." })
       await tx.wait()
-      setStatus({ type: "success", text: `Verifier ${verifierInputAddress} successfully removed!` })
+      setStatus({ type: "success", text: `Verifier ${targetAddress} successfully removed!` })
       setVerifierInputAddress("")
     } catch (err) {
       console.error("Error removing verifier:", err)
-      let errMsg = err.reason || err.message
+      let errMsg = err.reason || err.shortMessage || err.message
       if (err.code === "ACTION_REJECTED") {
         errMsg = "Transaction was rejected in MetaMask."
+      } else if (errMsg && (errMsg.includes("Cannot remove organizer as verifier") || errMsg.includes("Cannot remove organizer"))) {
+        errMsg = "The event organizer is a permanent verifier and cannot be removed."
       }
       setStatus({ type: "error", text: "Failed to remove verifier: " + errMsg })
     } finally {
@@ -1269,44 +1300,120 @@ function App() {
                 </section>
 
                 {/* Verifier Management (only visible to owner) */}
-                {account.toLowerCase() === contractOwner.toLowerCase() && (
-                  <section className="form-section glass-panel">
-                    <h2>Verifier Management</h2>
-                    <p style={{ fontSize: '0.85rem', color: '#64748b', marginTop: '-0.5rem', marginBottom: '1.5rem' }}>
-                      Add or remove authorized wallet addresses that can verify ticket entries.
-                    </p>
-                    <div className="form-group">
-                      <label>Verifier Address</label>
-                      <input
-                        type="text"
-                        className="form-control"
-                        placeholder="e.g. 0x..."
-                        value={verifierInputAddress}
-                        onChange={(e) => setVerifierInputAddress(e.target.value)}
-                      />
-                    </div>
-                    <div style={{ display: 'flex', gap: '1rem' }}>
-                      <button
-                        type="button"
-                        className="btn-primary"
-                        onClick={handleAddVerifier}
-                        disabled={actionLoading}
-                        style={{ flex: 1, background: 'linear-gradient(135deg, #10b981 0%, #059669 100%)', boxShadow: 'none' }}
+                {account.toLowerCase() === contractOwner.toLowerCase() && (() => {
+                  const isOrganizerInput = Boolean(
+                    contractOwner &&
+                    verifierInputAddress.trim() &&
+                    verifierInputAddress.trim().toLowerCase() === contractOwner.toLowerCase()
+                  )
+                  return (
+                    <section className="form-section glass-panel">
+                      <h2>Verifier Management</h2>
+                      <p style={{ fontSize: '0.85rem', color: '#64748b', marginTop: '-0.5rem', marginBottom: '1.25rem' }}>
+                        Add or remove authorized wallet addresses that can verify ticket entries.
+                      </p>
+
+                      {/* Organizer Permanent Verifier Status */}
+                      <div
+                        style={{
+                          display: 'flex',
+                          alignItems: 'center',
+                          justifyContent: 'space-between',
+                          padding: '0.85rem 1rem',
+                          background: 'rgba(16, 185, 129, 0.08)',
+                          border: '1px solid rgba(16, 185, 129, 0.25)',
+                          borderRadius: '10px',
+                          marginBottom: '1.25rem',
+                          flexWrap: 'wrap',
+                          gap: '0.5rem',
+                        }}
                       >
-                        Add Verifier
-                      </button>
-                      <button
-                        type="button"
-                        className="btn-primary"
-                        onClick={handleRemoveVerifier}
-                        disabled={actionLoading}
-                        style={{ flex: 1, background: 'linear-gradient(135deg, #ef4444 0%, #dc2626 100%)', boxShadow: 'none' }}
-                      >
-                        Remove Verifier
-                      </button>
-                    </div>
-                  </section>
-                )}
+                        <div>
+                          <div
+                            style={{
+                              fontSize: '0.75rem',
+                              fontWeight: 'bold',
+                              color: '#10b981',
+                              letterSpacing: '0.05em',
+                              textTransform: 'uppercase',
+                              marginBottom: '0.25rem',
+                            }}
+                          >
+                            Organizer · Permanent Verifier
+                          </div>
+                          <div
+                            style={{
+                              fontFamily: "'JetBrains Mono', monospace",
+                              fontSize: '0.82rem',
+                              color: '#e2e8f0',
+                              wordBreak: 'break-all',
+                            }}
+                          >
+                            {contractOwner}
+                          </div>
+                        </div>
+                        <span
+                          style={{
+                            fontSize: '0.72rem',
+                            fontWeight: '600',
+                            background: 'rgba(16, 185, 129, 0.2)',
+                            color: '#34d399',
+                            padding: '0.25rem 0.6rem',
+                            borderRadius: '6px',
+                            whiteSpace: 'nowrap',
+                          }}
+                        >
+                          Permanent Verifier
+                        </span>
+                      </div>
+
+                      <div className="form-group">
+                        <label>Verifier Address</label>
+                        <input
+                          type="text"
+                          className="form-control"
+                          placeholder="e.g. 0x..."
+                          value={verifierInputAddress}
+                          onChange={(e) => setVerifierInputAddress(e.target.value)}
+                        />
+                      </div>
+
+                      {isOrganizerInput && (
+                        <p style={{ fontSize: '0.82rem', color: '#f59e0b', marginTop: '-0.5rem', marginBottom: '1rem' }}>
+                          ⚠️ The event organizer is a permanent verifier and cannot be removed.
+                        </p>
+                      )}
+
+                      <div style={{ display: 'flex', gap: '1rem' }}>
+                        <button
+                          type="button"
+                          className="btn-primary"
+                          onClick={handleAddVerifier}
+                          disabled={actionLoading}
+                          style={{ flex: 1, background: 'linear-gradient(135deg, #10b981 0%, #059669 100%)', boxShadow: 'none' }}
+                        >
+                          Add Verifier
+                        </button>
+                        <button
+                          type="button"
+                          className="btn-primary"
+                          onClick={handleRemoveVerifier}
+                          disabled={actionLoading || isOrganizerInput}
+                          title={isOrganizerInput ? "The event organizer is a permanent verifier and cannot be removed." : "Remove verifier"}
+                          style={{
+                            flex: 1,
+                            background: isOrganizerInput ? 'rgba(239, 68, 68, 0.35)' : 'linear-gradient(135deg, #ef4444 0%, #dc2626 100%)',
+                            boxShadow: 'none',
+                            cursor: isOrganizerInput ? 'not-allowed' : 'pointer',
+                            opacity: isOrganizerInput ? 0.6 : 1,
+                          }}
+                        >
+                          Remove Verifier
+                        </button>
+                      </div>
+                    </section>
+                  )
+                })()}
               </div>
 
               {/* Right Column: Events List */}
@@ -1428,10 +1535,24 @@ function App() {
                           </p>
                           <div style={{ borderRadius: '12px', overflow: 'hidden', border: '2px solid rgba(0,238,252,0.3)', background: '#000', position: 'relative', minHeight: '280px' }}>
                             <Scanner
+                              constraints={{
+                                facingMode: { ideal: "environment" },
+                                width: { ideal: 1280 },
+                                height: { ideal: 720 },
+                              }}
                               onScan={handleScan}
                               onError={(err) => {
                                 console.error("Camera error:", err)
-                                setScanError("Camera connection issue: " + (err?.message || "Device busy or disconnected."))
+                                const message =
+                                  err instanceof Error
+                                    ? err.message
+                                    : typeof err === "string"
+                                      ? err
+                                      : JSON.stringify(err)
+                                setScanError(
+                                  "Camera connection issue: " +
+                                    (message || "Camera could not start. Check browser permissions and close other apps using the camera.")
+                                )
                               }}
                             />
                           </div>

@@ -60,6 +60,9 @@ contract EventTicket is ERC721, Ownable, ReentrancyGuard {
     // Mapping from NFT tokenId to ResaleListing details
     mapping(uint256 => ResaleListing) public resaleListings;
 
+    // Address of the original event organizer / creator
+    address public immutable organizer;
+
     // Mapping to track authorized verifiers (gate staff)
     mapping(address => bool) public authorizedVerifiers;
 
@@ -97,23 +100,27 @@ contract EventTicket is ERC721, Ownable, ReentrancyGuard {
     event VerifierRemoved(address indexed verifier);
     event TicketUsed(uint256 indexed tokenId, uint256 indexed eventId, address indexed scannedBy);
 
-    // Modifier that restricts access to only the contract owner or an authorized verifier
+    // Modifier that restricts access to only the contract owner, organizer, or an authorized verifier
     modifier onlyVerifierOrOwner() {
         require(
-            msg.sender == owner() || authorizedVerifiers[msg.sender],
+            msg.sender == owner() || msg.sender == organizer || authorizedVerifiers[msg.sender],
             "Not authorized: must be owner or verifier"
         );
         _;
     }
 
     /**
-     * @dev Constructor that initializes the ERC721 name and symbol, and sets the initial owner.
-     * @param initialOwner The address of the initial contract owner.
+     * @dev Constructor that initializes the ERC721 name and symbol, and sets the initial owner and organizer.
+     * @param initialOwner The address of the initial contract owner and event organizer.
      */
     constructor(address initialOwner) 
         ERC721("EventTicket", "EVT") 
         Ownable(initialOwner) 
-    {}
+    {
+        organizer = initialOwner;
+        authorizedVerifiers[initialOwner] = true;
+        emit VerifierAdded(initialOwner);
+    }
 
     /**
      * @notice Creates a new event. Only callable by the contract owner.
@@ -386,9 +393,11 @@ contract EventTicket is ERC721, Ownable, ReentrancyGuard {
 
     /**
      * @notice Removes an address from the authorized verifiers list. Only callable by the contract owner.
+     * The event organizer is permanent and cannot be removed.
      * @param verifier The address of the verifier to remove.
      */
     function removeVerifier(address verifier) external onlyOwner {
+        require(verifier != organizer && verifier != owner(), "Cannot remove organizer as verifier");
         require(authorizedVerifiers[verifier], "Address is not an authorized verifier");
         authorizedVerifiers[verifier] = false;
         emit VerifierRemoved(verifier);

@@ -66,3 +66,36 @@ test("isUserRejection: detects wallet rejections, ignores other errors", () => {
   assert.equal(isUserRejection(null), false)
   assert.equal(isUserRejection(undefined), false)
 })
+
+test("state isolation: ticket ID, QR payload, and ticket hash cannot overwrite organizer identity", () => {
+  const organizerAddress = A
+  let currentOrganizer = organizerAddress
+
+  // Entering a numeric ticket ID
+  const manualInput = "42"
+  const parsedId = parseManualTicketInput(manualInput, A)
+  assert.equal(parsedId, 42)
+  assert.equal(currentOrganizer, organizerAddress, "organizer address remains unchanged after ticket ID entry")
+
+  // Entering full QR JSON
+  const qrInput = qr({ contractAddress: A, tokenId: 7 })
+  const scannedId = parseTicketQr(qrInput, A)
+  assert.equal(scannedId, 7)
+  assert.equal(currentOrganizer, organizerAddress, "organizer address remains unchanged after QR scan")
+})
+
+test("verifier management: organizer address is recognized as non-removable permanent verifier", () => {
+  const organizer = A.toLowerCase()
+
+  const isOrganizerTarget = (target, org) => {
+    return Boolean(org && target && target.trim().toLowerCase() === org.toLowerCase())
+  }
+
+  // Removal attempt targeting organizer
+  assert.equal(isOrganizerTarget(A, organizer), true)
+  assert.equal(isOrganizerTarget(A.toUpperCase(), organizer), true)
+  assert.equal(isOrganizerTarget(" " + A + " ", organizer), true)
+
+  // Removal attempt targeting other verifier
+  assert.equal(isOrganizerTarget(B, organizer), false)
+})

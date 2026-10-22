@@ -504,6 +504,185 @@ describe("EventTicket Contract", function () {
       ).to.be.revertedWith("Not authorized: must be owner or verifier");
     });
   });
+
+  describe("Organizer Verifier Authorization Invariant", function () {
+    const eventName = "Hackathon 2026";
+    let eventDate;
+    const tierNames = ["Standard", "VIP"];
+    let prices;
+    const maxSupply = [100, 20];
+    const resaleCapPercent = 110;
+    const royaltyPercent = 5;
+    let eventId = 1;
+    let tokenId = 1;
+    let verifier;
+    let verifier2;
+    let unauthorized;
+
+    beforeEach(async function () {
+      [, addr1, addr2, verifier, unauthorized, verifier2] = await ethers.getSigners();
+      eventDate = Math.floor(Date.now() / 1000) + 86400;
+      prices = [ethers.parseEther("0.05"), ethers.parseEther("0.1")];
+
+      await eventTicket.connect(owner).createEvent(
+        eventName,
+        eventDate,
+        tierNames,
+        prices,
+        maxSupply,
+        resaleCapPercent,
+        royaltyPercent
+      );
+
+      // Mint ticket 1 to addr1
+      await eventTicket.connect(addr1).mintTicket(eventId, 0, { value: prices[0] });
+    });
+
+    it("1. The event organizer is initially recognized as an authorized verifier", async function () {
+      expect(await eventTicket.authorizedVerifiers(owner.address)).to.be.true;
+      expect(await eventTicket.organizer()).to.equal(owner.address);
+    });
+
+    it("2. An authorized administrator attempts to remove the organizer: the operation reverts", async function () {
+      await expect(
+        eventTicket.connect(owner).removeVerifier(owner.address)
+      ).to.be.revertedWith("Cannot remove organizer as verifier");
+
+      // Verify authorization status is completely intact
+      expect(await eventTicket.authorizedVerifiers(owner.address)).to.be.true;
+    });
+
+    it("3. The organizer remains authorized after other verifiers are added", async function () {
+      await eventTicket.connect(owner).addVerifier(verifier.address);
+      await eventTicket.connect(owner).addVerifier(verifier2.address);
+
+      expect(await eventTicket.authorizedVerifiers(verifier.address)).to.be.true;
+      expect(await eventTicket.authorizedVerifiers(verifier2.address)).to.be.true;
+      expect(await eventTicket.authorizedVerifiers(owner.address)).to.be.true;
+    });
+
+    it("4. Removing a non-organizer verifier succeeds when the caller has permission", async function () {
+      await eventTicket.connect(owner).addVerifier(verifier.address);
+      expect(await eventTicket.authorizedVerifiers(verifier.address)).to.be.true;
+
+      await expect(eventTicket.connect(owner).removeVerifier(verifier.address))
+        .to.emit(eventTicket, "VerifierRemoved")
+        .withArgs(verifier.address);
+
+      expect(await eventTicket.authorizedVerifiers(verifier.address)).to.be.false;
+    });
+
+    it("5. An unauthorized wallet cannot remove another verifier or the organizer", async function () {
+      await eventTicket.connect(owner).addVerifier(verifier.address);
+
+      await expect(
+        eventTicket.connect(unauthorized).removeVerifier(verifier.address)
+      ).to.be.revertedWithCustomError(eventTicket, "OwnableUnauthorizedAccount")
+        .withArgs(unauthorized.address);
+
+      await expect(
+        eventTicket.connect(unauthorized).removeVerifier(owner.address)
+      ).to.be.revertedWithCustomError(eventTicket, "OwnableUnauthorizedAccount")
+        .withArgs(unauthorized.address);
+    });
+
+    it("6. The organizer remains authorized after another verifier is removed", async function () {
+      await eventTicket.connect(owner).addVerifier(verifier.address);
+      await eventTicket.connect(owner).removeVerifier(verifier.address);
+
+      expect(await eventTicket.authorizedVerifiers(owner.address)).to.be.true;
+      await expect(eventTicket.connect(owner).markAsUsed(tokenId))
+        .to.emit(eventTicket, "TicketUsed")
+        .withArgs(tokenId, eventId, owner.address);
+
+      const details = await eventTicket.getTicketDetails(tokenId);
+      expect(details.used).to.be.true;
+    });
+
+    it("7. Attempting to enter or scan a ticket ID/hash does not alter organizer authorization", async function () {
+      // Validate ticket
+      expect(await eventTicket.isValidForEvent(tokenId)).to.be.true;
+      const details = await eventTicket.getTicketDetails(tokenId);
+      expect(details.used).to.be.false;
+
+      // Non-existent ticket query
+      expect(await eventTicket.isValidForEvent(99999)).to.be.false;
+
+      // Checking in ticket
+      await eventTicket.connect(owner).markAsUsed(tokenId);
+
+      // Organizer verifier status is completely unaltered
+      expect(await eventTicket.authorizedVerifiers(owner.address)).to.be.true;
+      expect(await eventTicket.organizer()).to.equal(owner.address);
+    });
+
+    it("8. Verifier changes for one event do not affect another event", async function () {
+      // Create second event within the same contract
+      const event2Date = Math.floor(Date.now() / 1000) + 172800;
+      await eventTicket.connect(owner).createEvent(
+        "Music Fest",
+        event2Date,
+        ["General"],
+        [ethers.parseEther("0.08")],
+        [50],
+        120,
+        10
+      );
+      const eventId2 = 2;
+
+      // Mint ticket 2 for Event 2 to addr2
+      await eventTicket.connect(addr2).mintTicket(eventId2, 0, { value: ethers.parseEther("0.08") });
+      const tokenId2 = 2;
+
+      // Add and remove verifier
+      await eventTicket.connect(owner).addVerifier(verifier.address);
+      await eventTicket.connect(owner).removeVerifier(verifier.address);
+
+      // Organizer checks in ticket 1 for Event 1
+      await eventTicket.connect(owner).markAsUsed(tokenId);
+      expect(await eventTicket.isValidForEvent(tokenId)).to.be.false;
+
+      // Ticket 2 for Event 2 remains completely unaffected and valid
+      expect(await eventTicket.isValidForEvent(tokenId2)).to.be.true;
+      const ticket2Details = await eventTicket.getTicketDetails(tokenId2);
+      expect(ticket2Details.used).to.be.false;
+      expect(ticket2Details.eventId).to.equal(eventId2);
+
+      // Organizer can also check in Event 2's ticket
+      await expect(eventTicket.connect(owner).markAsUsed(tokenId2))
+        .to.emit(eventTicket, "TicketUsed")
+        .withArgs(tokenId2, eventId2, owner.address);
+
+      // Also verify separate contract deployments are completely isolated
+      const EventTicketFactory = await ethers.getContractFactory("EventTicket");
+      const eventTicketB = await EventTicketFactory.deploy(addr1.address);
+      await eventTicketB.waitForDeployment();
+
+      expect(await eventTicketB.authorizedVerifiers(addr1.address)).to.be.true;
+      expect(await eventTicketB.authorizedVerifiers(owner.address)).to.be.false;
+
+      // Verifier changes on contract A do not impact contract B
+      await eventTicket.connect(owner).addVerifier(verifier.address);
+      expect(await eventTicket.authorizedVerifiers(verifier.address)).to.be.true;
+      expect(await eventTicketB.authorizedVerifiers(verifier.address)).to.be.false;
+    });
+
+    it("9. Ticket validation and check-in continue to work", async function () {
+      await eventTicket.connect(owner).addVerifier(verifier.address);
+
+      expect(await eventTicket.isValidForEvent(tokenId)).to.be.true;
+
+      await expect(eventTicket.connect(verifier).markAsUsed(tokenId))
+        .to.emit(eventTicket, "TicketUsed")
+        .withArgs(tokenId, eventId, verifier.address);
+
+      expect(await eventTicket.isValidForEvent(tokenId)).to.be.false;
+
+      await expect(
+        eventTicket.connect(verifier).markAsUsed(tokenId)
+      ).to.be.revertedWith("Ticket has already been used");
+    });
+  });
   describe("Security hardening", function () {
     let prices;
     const tierNames = ["General"];
